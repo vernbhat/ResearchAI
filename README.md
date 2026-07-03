@@ -1,4 +1,4 @@
-# ResearchHub AI
+# Research AI
 
 An intelligent literature review assistant MVP. Upload research PDFs, ask grounded questions, get citations, generate summaries, compare papers, find related work, and keep chat history locally.
 
