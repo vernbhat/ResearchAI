@@ -5,6 +5,7 @@ import re
 from typing import Any
 
 from app.models import Citation
+from app.services.text import clean_text
 
 BROAD_OVERVIEW_RE = re.compile(
     r"\b(what('?s| is)\s+(this|the)\s+paper\s+about|summari[sz]e|overview|main idea|explain\s+this\s+paper)\b",
@@ -125,7 +126,7 @@ def summarize_paper_chunks(title: str, chunks: list[dict[str, Any]]) -> str:
             continue
         used.add(sentence["text"])
         cited_pages.add(sentence["page_number"])
-        lines.append(f"{heading}: {sentence['text']} (p. {sentence['page_number']})")
+        lines.append(f"{heading}: {sentence['text']} (Page {sentence['page_number']})")
 
     contribution_sentences = _best_sentences(
         chunks,
@@ -139,13 +140,74 @@ def summarize_paper_chunks(title: str, chunks: list[dict[str, Any]]) -> str:
         for sentence in contribution_sentences:
             used.add(sentence["text"])
             cited_pages.add(sentence["page_number"])
-            lines.append(f"- {sentence['text']} (p. {sentence['page_number']})")
+            lines.append(f"- {sentence['text']} (Page {sentence['page_number']})")
 
     if cited_pages:
         lines.append("")
-        lines.append("Evidence pages: " + ", ".join(f"p. {page}" for page in sorted(cited_pages)))
+        lines.append("Evidence pages: " + ", ".join(f"Page {page}" for page in sorted(cited_pages)))
 
     return "\n".join(lines)
+
+
+def comparison_profile(title: str, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    profile: dict[str, Any] = {"title": title, "aspects": {}}
+    aspect_keywords = {
+        "Research focus": [
+            "paper",
+            "study",
+            "review",
+            "survey",
+            "examine",
+            "evaluate",
+            "focus",
+            "objective",
+        ],
+        "Methods and data": [
+            "method",
+            "model",
+            "dataset",
+            "data",
+            "deep learning",
+            "machine learning",
+            "analysis",
+            "clinical",
+        ],
+        "Main findings": [
+            "results",
+            "show",
+            "find",
+            "performance",
+            "accuracy",
+            "robust",
+            "generalizability",
+            "benefit",
+        ],
+        "Limitations or challenges": [
+            "limitation",
+            "challenge",
+            "risk",
+            "overfitting",
+            "barrier",
+            "difficult",
+            "concern",
+            "generalize",
+        ],
+    }
+    used: set[str] = set()
+    for aspect, keywords in aspect_keywords.items():
+        sentence = _best_sentence(chunks, keywords, used)
+        if sentence is None:
+            profile["aspects"][aspect] = {
+                "text": "No clear evidence found in the extracted text.",
+                "page_number": None,
+            }
+            continue
+        used.add(sentence["text"])
+        profile["aspects"][aspect] = {
+            "text": sentence["text"],
+            "page_number": sentence["page_number"],
+        }
+    return profile
 
 
 def _best_sentences(
@@ -195,6 +257,7 @@ def _rank_sentences(
 
 
 def _sentences(text: str) -> list[str]:
+    text = clean_text(text)
     parts = re.split(r"(?<=[.!?])\s+", text)
     return [re.sub(r"\s+", " ", part).strip() for part in parts if part.strip()]
 
@@ -204,6 +267,8 @@ def _useful_sentence(sentence: str) -> bool:
     if len(sentence) < 45 or len(sentence) > 360:
         return False
     if not sentence.endswith((".", "!", "?")):
+        return False
+    if lowered.endswith((" fig.", " fig", "(fig.", "(fig")):
         return False
     noisy = [
         "received ",

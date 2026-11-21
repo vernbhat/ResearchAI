@@ -9,6 +9,7 @@ import {
   MessageSquareText,
   Search,
   Sparkles,
+  Trash2,
   Upload,
 } from "lucide-react";
 import "./styles.css";
@@ -34,7 +35,7 @@ function App() {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState([]);
   const [summary, setSummary] = useState("");
-  const [comparison, setComparison] = useState([]);
+  const [comparison, setComparison] = useState(null);
   const [related, setRelated] = useState([]);
   const [relatedSearched, setRelatedSearched] = useState(false);
 
@@ -57,13 +58,25 @@ function App() {
     if (!files?.length) return;
     setBusy("upload");
     setError("");
+    const skipped = [];
     try {
       for (const file of files) {
         const form = new FormData();
         form.append("file", file);
-        await api("/papers", { method: "POST", body: form });
+        try {
+          await api("/papers", { method: "POST", body: form });
+        } catch (err) {
+          if (err.message.includes("already uploaded")) {
+            skipped.push(file.name);
+            continue;
+          }
+          throw err;
+        }
       }
       await refresh();
+      if (skipped.length) {
+        setError(`Skipped duplicate upload: ${skipped.join(", ")}`);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -140,6 +153,27 @@ function App() {
     }
   }
 
+  async function deletePaper(paper) {
+    const confirmed = window.confirm(`Delete "${paper.title}" from previous papers?`);
+    if (!confirmed) return;
+
+    setBusy(`delete-${paper.id}`);
+    setError("");
+    try {
+      await api(`/papers/${paper.id}`, { method: "DELETE" });
+      setSelected((current) => current.filter((id) => id !== paper.id));
+      setComparison(null);
+      setRelated((current) => current.filter((item) => item.paper_id !== paper.id));
+      setAnswer(null);
+      setSummary("");
+      await refresh();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   const selectedTitles = useMemo(
     () =>
       papers
@@ -196,6 +230,15 @@ function App() {
               <div className="row">
                 <button onClick={() => loadSummary(paper.id)}>Summary</button>
                 <button onClick={() => findRelated(paper.id)}>Related</button>
+                <button
+                  className="danger"
+                  disabled={busy === `delete-${paper.id}`}
+                  title="Delete paper"
+                  onClick={() => deletePaper(paper)}
+                >
+                  <Trash2 size={15} />
+                  Delete
+                </button>
               </div>
             </div>
           ))}
@@ -316,15 +359,19 @@ function App() {
             <h3>
               <GitCompare size={18} /> Comparison
             </h3>
-            {comparison.length ? (
-              comparison.map((entry) => (
-                <article key={entry.paper.id}>
-                  <strong>{entry.paper.title}</strong>
-                  {entry.highlights.map((item) => (
-                    <p key={item.chunk_id}>
-                      p. {item.page_number}: {item.excerpt}
-                    </p>
-                  ))}
+            {comparison?.aspects?.length ? (
+              comparison.aspects.map((aspect) => (
+                <article key={aspect.label} className="comparison-aspect">
+                  <strong>{aspect.label}</strong>
+                  <div className="comparison-points">
+                    {aspect.points.map((point) => (
+                      <div className="comparison-point" key={`${aspect.label}-${point.paper_id}`}>
+                        <span>{point.paper_title}</span>
+                        <p>{point.text}</p>
+                        {point.page_number && <small>Source: Page {point.page_number}</small>}
+                      </div>
+                    ))}
+                  </div>
                 </article>
               ))
             ) : (

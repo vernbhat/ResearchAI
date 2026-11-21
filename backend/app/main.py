@@ -9,7 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import UPLOAD_DIR, connect, dumps, ensure_storage, loads, row_to_dict
 from app.models import AskRequest, AskResponse, CompareRequest, RelatedRequest
 from app.services.pdf import chunk_pages, extract_pdf_pages
-from app.services.qa import is_broad_overview_question, summarize_paper_chunks, synthesize_answer
+from app.services.qa import (
+    comparison_profile,
+    is_broad_overview_question,
+    summarize_paper_chunks,
+    synthesize_answer,
+)
 from app.services.retrieval import search_chunks
 from app.services.text import vectorize
 
@@ -41,6 +46,9 @@ async def upload_paper(file: UploadFile = File(...)) -> dict[str, object]:
 
     ensure_storage()
     safe_name = Path(file.filename).name
+    if _paper_filename_exists(safe_name):
+        raise HTTPException(status_code=409, detail=f"{safe_name} is already uploaded.")
+
     destination = UPLOAD_DIR / safe_name
     suffix = 1
     while destination.exists():
@@ -94,11 +102,32 @@ def list_papers() -> list[dict[str, object]]:
             SELECT p.*, COUNT(c.id) AS chunk_count
             FROM papers p
             LEFT JOIN chunks c ON c.paper_id = p.id
+            WHERE p.id IN (
+                SELECT MAX(id)
+                FROM papers
+                GROUP BY lower(filename)
+            )
             GROUP BY p.id
             ORDER BY p.uploaded_at DESC
             """
         ).fetchall()
     return [row_to_dict(row) for row in rows]
+
+
+@app.delete("/papers/{paper_id}")
+def delete_paper(paper_id: int) -> dict[str, object]:
+    ensure_storage()
+    with connect() as db:
+        paper = db.execute("SELECT * FROM papers WHERE id = ?", (paper_id,)).fetchone()
+        if not paper:
+            raise HTTPException(status_code=404, detail="Paper not found.")
+        db.execute("DELETE FROM papers WHERE id = ?", (paper_id,))
+
+    path = Path(paper["path"])
+    if path.exists():
+        path.unlink()
+
+    return {"deleted": True, "id": paper_id, "title": paper["title"]}
 
 
 @app.get("/papers/{paper_id}/summary")
@@ -193,15 +222,47 @@ def compare_papers(request: CompareRequest) -> dict[str, object]:
             f"SELECT id, title FROM papers WHERE id IN ({','.join('?' for _ in request.paper_ids)})",
             request.paper_ids,
         ).fetchall()
-    papers = [row_to_dict(row) for row in rows]
+    papers = _unique_papers_for_comparison([row_to_dict(row) for row in rows])
     if len(papers) < 2:
-        raise HTTPException(status_code=400, detail="Choose at least two existing papers.")
+        raise HTTPException(status_code=400, detail="Choose at least two different papers.")
 
-    comparison = []
+    profiles = []
     for paper in papers:
-        citations = search_chunks("method approach dataset results contribution limitation", 5, [paper["id"]])
-        comparison.append({"paper": paper, "highlights": citations})
-    return {"comparison": comparison}
+        with connect() as db:
+            chunk_rows = db.execute(
+                """
+                SELECT page_number, chunk_index, text
+                FROM chunks
+                WHERE paper_id = ?
+                ORDER BY chunk_index
+                """,
+                (paper["id"],),
+            ).fetchall()
+        profile = comparison_profile(str(paper["title"]), [row_to_dict(row) for row in chunk_rows])
+        profiles.append({"paper": paper, "profile": profile})
+
+    aspects = []
+    for label in ["Research focus", "Methods and data", "Main findings", "Limitations or challenges"]:
+        aspects.append(
+            {
+                "label": label,
+                "points": [
+                    {
+                        "paper_id": item["paper"]["id"],
+                        "paper_title": item["paper"]["title"],
+                        **item["profile"]["aspects"][label],
+                    }
+                    for item in profiles
+                ],
+            }
+        )
+
+    return {
+        "comparison": {
+            "papers": [item["paper"] for item in profiles],
+            "aspects": aspects,
+        }
+    }
 
 
 @app.post("/related")
@@ -216,11 +277,23 @@ def related_work(request: RelatedRequest) -> dict[str, object]:
         ).fetchall()
     seed = " ".join(row["text"] for row in seed_rows)
     duplicate_ids = _duplicate_paper_ids(request.paper_id, paper["filename"], paper["title"])
+    unique_paper_count = _unique_paper_count()
     citations = [
         item
-        for item in search_chunks(seed, request.top_k + len(duplicate_ids) + 5)
+        for item in search_chunks(seed, max(80, request.top_k * unique_paper_count * 20))
         if item.paper_id not in duplicate_ids
     ]
+
+    if not citations:
+        citations = [
+            item
+            for item in search_chunks(
+                "machine learning deep learning artificial intelligence model evaluation method dataset results",
+                max(80, request.top_k * unique_paper_count * 20),
+            )
+            if item.paper_id not in duplicate_ids
+        ]
+
     return {"paper": row_to_dict(paper), "related": citations[: request.top_k]}
 
 
@@ -237,3 +310,30 @@ def _duplicate_paper_ids(paper_id: int, filename: str, title: str) -> set[int]:
             (paper_id, filename, title),
         ).fetchall()
     return {int(row["id"]) for row in rows}
+
+
+def _paper_filename_exists(filename: str) -> bool:
+    with connect() as db:
+        row = db.execute(
+            "SELECT 1 FROM papers WHERE lower(filename) = lower(?) LIMIT 1",
+            (filename,),
+        ).fetchone()
+    return row is not None
+
+
+def _unique_paper_count() -> int:
+    with connect() as db:
+        row = db.execute("SELECT COUNT(DISTINCT lower(filename)) AS total FROM papers").fetchone()
+    return int(row["total"] or 1)
+
+
+def _unique_papers_for_comparison(papers: list[dict[str, object]]) -> list[dict[str, object]]:
+    unique: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for paper in papers:
+        key = str(paper["title"]).strip().lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(paper)
+    return unique

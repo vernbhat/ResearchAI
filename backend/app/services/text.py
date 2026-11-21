@@ -51,6 +51,13 @@ def cosine(left: dict[str, float], right: dict[str, float]) -> float:
 
 
 def clean_text(text: str) -> str:
+    text = (
+        text.replace("ﬁ", "fi")
+        .replace("ﬂ", "fl")
+        .replace("–", "-")
+        .replace("—", "-")
+    )
+    text = re.sub(r"(?<=[A-Za-z])-\s+(?=[a-z])", "", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
