@@ -1,6 +1,6 @@
 # ResearchAI
 
-An AI literature-review assistant. Upload research-paper PDFs, then ask questions and get answers grounded in the papers with page citations, generate structured summaries, compare papers side by side, find related work in your library, and keep chat history.
+An AI literature-review assistant. Upload research-paper PDFs, then ask questions and get answers grounded in the papers with page citations, generate structured summaries, compare papers side by side, find related published work (Semantic Scholar / OpenAlex / arXiv) and similar papers in your library, and keep chat history.
 
 ## How it works
 
@@ -18,7 +18,7 @@ React (Vite)  ──►  FastAPI
 - **Ask**: question → query expansion → hybrid search over chunks → top excerpts go to the LLM with instructions to answer only from them and cite `[n]`. The last few chat turns go along too, so follow-up questions work.
 - **Summary**: abstract/introduction and conclusion chunks → structured summary (Overview, Problem, Method, Key results, Contributions, Limitations). Cached in SQLite after the first call.
 - **Compare**: 2–4 selected papers → JSON comparison across research focus, methods/data, findings and limitations.
-- **Related work**: ranks the other papers in your library by the cosine similarity of their mean chunk embeddings.
+- **Related work**: identifies the paper (arXiv ID / DOI / title) and fetches related published papers from Semantic Scholar recommendations, falling back to OpenAlex related works and then an arXiv keyword search re-ranked by embedding similarity. The LLM adds a one-line "how it relates" note (builds on, extends, competes with...). Results are cached per paper. It also ranks the other papers in your library by cosine similarity of mean chunk embeddings and shows the closest passage.
 - **No LLM key?** Everything still runs: answers fall back to extracted passages and summaries to ranked sentences.
 
 ## Quick start
@@ -69,7 +69,7 @@ Open <http://localhost:5173>.
 | POST | `/ask` | `{question, chat_id?, paper_ids?, top_k?}` → cited answer |
 | GET / DELETE | `/chats`, `/chats/{id}` | Chat history |
 | POST | `/compare` | `{paper_ids: [..]}` → aspect-by-aspect comparison |
-| POST | `/related` | `{paper_id}` → most similar papers in the library |
+| POST | `/related` | `{paper_id, refresh?}` → related published papers (`external`) + most similar papers in the library (`library`) |
 
 ## Configuration (`backend/.env`)
 
@@ -87,5 +87,5 @@ Databases from the earlier version are migrated automatically, and existing chun
 ## Limitations
 
 - Scanned (image-only) PDFs need OCR, which isn't supported.
-- Related work searches only your uploaded papers, not the internet.
+- Online related-work lookups use free public APIs that limit requests per network; if they are busy, the app falls back to arXiv or shows a notice. Optional keys (`SEMANTIC_SCHOLAR_API_KEY`, `OPENALEX_API_KEY`) raise the limits.
 - Small local models (≤3B) follow citation instructions less reliably than the Groq models.

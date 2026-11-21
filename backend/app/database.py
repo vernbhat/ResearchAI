@@ -60,7 +60,7 @@ def _migrate(db: sqlite3.Connection) -> None:
     """Add columns introduced after the first version without losing data."""
     columns = {
         "chunks": {"embedding_json": "TEXT"},
-        "papers": {"summary": "TEXT"},
+        "papers": {"summary": "TEXT", "related_json": "TEXT"},
     }
     for table, wanted in columns.items():
         existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}

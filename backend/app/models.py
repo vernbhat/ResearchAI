@@ -35,3 +35,5 @@ class CompareRequest(BaseModel):
 class RelatedRequest(BaseModel):
     paper_id: int
     top_k: int = Field(default=5, ge=1, le=10)
+    external_k: int = Field(default=8, ge=1, le=15)
+    refresh: bool = False

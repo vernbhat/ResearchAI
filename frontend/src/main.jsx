@@ -188,14 +188,22 @@ function App() {
     });
   }
 
-  async function findRelated(paper) {
+  async function findRelated(paper, refresh = false) {
     await run(`related-${paper.id}`, async () => {
       const data = await api("/related", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paper_id: paper.id }),
+        body: JSON.stringify({ paper_id: paper.id, refresh }),
       });
-      setRelated({ title: paper.title, items: data.related });
+      setRelated({
+        paper,
+        title: paper.title,
+        library: data.library || [],
+        external: data.external || [],
+        source: data.source,
+        notice: data.notice,
+        keywords: data.keywords || [],
+      });
     });
   }
 
@@ -423,24 +431,68 @@ function App() {
               <Search size={18} /> Related Work
             </h3>
             {related ? (
-              related.items.length ? (
-                <>
-                  <p className="muted">Papers in your library most similar to {related.title}</p>
-                  {related.items.map((item) => (
+              <>
+                <div className="related-head">
+                  <p className="muted">
+                    Published papers related to <strong>{related.title}</strong>
+                    {related.source ? ` · via ${related.source}` : ""}
+                  </p>
+                  <button
+                    className="ghost"
+                    disabled={busy.startsWith("related")}
+                    onClick={() => findRelated(related.paper, true)}
+                    title="Search the paper databases again"
+                  >
+                    <RefreshCw size={14} /> Refresh
+                  </button>
+                </div>
+                {related.notice ? <p className="notice">{related.notice}</p> : null}
+                {related.external.map((item, index) => (
+                  <article key={`${item.url || item.title}-${index}`} className="related-paper">
+                    <strong>
+                      {item.url ? (
+                        <a href={item.url} target="_blank" rel="noreferrer">
+                          {item.title}
+                        </a>
+                      ) : (
+                        item.title
+                      )}
+                    </strong>
+                    <span>
+                      {[item.authors, item.venue, item.year].filter(Boolean).join(" · ")}
+                      {item.citations != null ? ` · ${item.citations.toLocaleString()} citations` : ""}
+                      {item.in_library ? " · in your library" : ""}
+                    </span>
+                    {item.reason ? (
+                      <p className="reason">
+                        {item.relation ? <em className="tag">{item.relation}</em> : null} {item.reason}
+                      </p>
+                    ) : null}
+                    {item.abstract ? <p className="abstract">{item.abstract}</p> : null}
+                    {item.pdf_url ? (
+                      <a className="pdf-link" href={item.pdf_url} target="_blank" rel="noreferrer">
+                        Open PDF
+                      </a>
+                    ) : null}
+                  </article>
+                ))}
+                <h4 className="subhead">In your library</h4>
+                {related.library.length ? (
+                  related.library.map((item) => (
                     <article key={item.chunk_id}>
                       <strong>{item.paper_title}</strong>
                       <span>
-                        Similarity {item.score} · best match on page {item.page_number}
+                        Similarity {item.score} · closest passage on page {item.page_number}
                       </span>
                       <p>{item.excerpt}</p>
                     </article>
-                  ))}
-                </>
-              ) : (
-                <p className="empty">No other papers to compare against yet. Upload more PDFs.</p>
-              )
+                  ))
+                ) : (
+                  <p className="empty">Upload more PDFs to see which of your papers are closest to this one.</p>
+                )}
+              </>
             ) : (
-              <p className="empty">Choose Related on a paper after uploading more than one PDF.</p>
+              <p className="empty">Choose Related on any paper to find similar published work.</p>
             )}
           </section>
         </div>
