@@ -20,7 +20,9 @@ from app.services.qa import (
     is_broad_overview_question,
     summarize_paper,
 )
-from app.services.retrieval import paper_vectors, search_chunks
+from app.services import scholar
+from app.services.llm import LLMError, chat_json
+from app.services.retrieval import load_chunks, paper_vectors, search_chunks
 from app.services.text import excerpt, vectorize
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -326,46 +328,154 @@ def compare(request: CompareRequest) -> dict[str, object]:
     return {"comparison": compare_papers(papers, chunks_by_paper)}
 
 
-@app.post("/related")
-def related_work(request: RelatedRequest) -> dict[str, object]:
-    paper = _get_paper(request.paper_id)
-    seed_chunks = _paper_chunks(request.paper_id)[:3]
-    seed_text = " ".join(str(c["text"]) for c in seed_chunks)
+def _paper_text(paper_id: int, max_chunks: int = 6) -> str:
+    """Opening text of a paper with the 40-word chunk overlap removed."""
+    chunks = _paper_chunks(paper_id)[:max_chunks]
+    parts = []
+    for i, chunk in enumerate(chunks):
+        words = str(chunk["text"]).split()
+        parts.append(" ".join(words if i == 0 else words[40:]))
+    return " ".join(parts)
 
+
+def _library_matches(paper: dict, top_k: int) -> list[Citation]:
+    """Other uploaded papers ranked by embedding similarity, each with its most similar passage."""
+    paper_id = int(paper["id"])
     with connect() as db:
         duplicates = {
             int(row["id"])
             for row in db.execute(
                 "SELECT id FROM papers WHERE id = ? OR lower(filename) = lower(?) OR lower(title) = lower(?)",
-                (request.paper_id, paper["filename"], paper["title"]),
+                (paper_id, paper["filename"], paper["title"]),
             ).fetchall()
         }
-
-    # Rank other papers by similarity of their mean embedding to this paper's.
     vectors = paper_vectors()
-    seed_vector = vectors.get(request.paper_id)
-    ranked_ids: list[tuple[int, float]] = []
+    seed_vector = vectors.get(paper_id)
+    matches: list[Citation] = []
     if seed_vector:
-        ranked_ids = sorted(
+        ranked = sorted(
             ((pid, embeddings.dot(seed_vector, vec)) for pid, vec in vectors.items() if pid not in duplicates),
             key=lambda item: item[1],
             reverse=True,
-        )
-
-    related: list[Citation] = []
-    if ranked_ids:
-        for pid, paper_score in ranked_ids[: request.top_k]:
-            best = search_chunks(seed_text, 1, [pid])
-            if best:
-                related.append(best[0].model_copy(update={"score": round(paper_score, 4)}))
-    else:  # keyword fallback: best chunk per other paper
-        seen: set[int] = set()
-        for citation in search_chunks(seed_text, 200, exclude_paper_ids=duplicates):
-            if citation.paper_id in seen:
+        )[:top_k]
+        for pid, paper_score in ranked:
+            chunks = [c for c in load_chunks([pid]) if c.get("embedding_json")]
+            if not chunks:
                 continue
+            best = max(chunks, key=lambda c: embeddings.dot(seed_vector, loads(c["embedding_json"])))
+            matches.append(
+                Citation(
+                    paper_id=pid,
+                    paper_title=str(best["paper_title"]),
+                    chunk_id=int(best["chunk_id"]),
+                    page_number=int(best["page_number"]),
+                    score=round(paper_score, 4),
+                    excerpt=excerpt(str(best["text"])),
+                )
+            )
+        return matches
+    seed_text = _paper_text(paper_id, 3)
+    seen: set[int] = set()
+    for citation in search_chunks(seed_text, 200, exclude_paper_ids=duplicates):
+        if citation.paper_id not in seen:
             seen.add(citation.paper_id)
-            related.append(citation)
-            if len(related) >= request.top_k:
-                break
+            matches.append(citation)
+        if len(matches) >= top_k:
+            break
+    return matches
 
-    return {"paper": paper, "related": related}
+
+def _semantic_reranker(paper_id: int):
+    vectors = paper_vectors()
+    seed_vector = vectors.get(paper_id)
+    if not seed_vector:
+        return None
+
+    def rerank(texts: list[str]) -> list[float] | None:
+        vecs = embeddings.embed_documents(texts)
+        return [embeddings.dot(seed_vector, v) for v in vecs] if vecs else None
+
+    return rerank
+
+
+RELATIONS = {"builds on", "extends", "applies", "competes with", "surveys", "similar topic"}
+
+
+def _explain_related(title: str, abstract: str, papers: list[dict]) -> None:
+    """Add a one-line 'why it is related' note to each external paper (LLM, best effort)."""
+    if not papers or not llm_status()["enabled"]:
+        return
+    listing = "\n".join(
+        f"[{i}] {p['title']} ({p.get('year') or 'n.d.'}): {(p.get('abstract') or '')[:300]}"
+        for i, p in enumerate(papers)
+    )
+    try:
+        data = chat_json(
+            [
+                {
+                    "role": "system",
+                    "content": "You help researchers map related work. Reply with JSON only.",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Seed paper: {title}\nAbstract: {abstract[:1500]}\n\nCandidate papers:\n{listing}\n\n"
+                        'Return {"items": [{"index": 0, "relation": "builds on | extends | applies | '
+                        'competes with | surveys | similar topic", "reason": "one sentence, max 25 words, '
+                        'on how it relates to the seed paper"}]} covering every candidate.'
+                    ),
+                },
+            ],
+            max_tokens=1500,
+        )
+    except LLMError as exc:
+        log.info("Related-work explanations skipped: %s", exc)
+        return
+    items = data.get("items", []) if isinstance(data, dict) else data
+    for item in items if isinstance(items, list) else []:
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if 0 <= index < len(papers):
+            papers[index]["reason"] = str(item.get("reason") or "").strip() or None
+            relation = str(item.get("relation") or "").split("|")[0].strip().lower()
+            papers[index]["relation"] = relation if relation in RELATIONS else None
+
+
+@app.post("/related")
+def related_work(request: RelatedRequest) -> dict[str, object]:
+    paper = _get_paper(request.paper_id)
+    library = _library_matches(paper, request.top_k)
+
+    cached = loads(str(paper["related_json"])) if paper.get("related_json") else None
+    if cached and not request.refresh:
+        online = cached
+    else:
+        text = _paper_text(request.paper_id)
+        seed = scholar.identify(str(paper["title"]), str(paper["filename"]), text)
+        found = scholar.find_related(seed, request.external_k, rerank=_semantic_reranker(request.paper_id))
+        _explain_related(seed.title, scholar.abstract_text(text), found.papers)
+        online = {
+            "external": found.papers,
+            "source": found.source,
+            "keywords": scholar.keywords(seed),
+            "notice": None if found.papers else (
+                "No published related papers found right now ("
+                + "; ".join(e.rstrip(".") for e in found.errors)
+                + "). Try Refresh in a minute; the free paper databases limit requests per network."
+            ),
+        }
+        if found.papers:  # only cache successful lookups
+            with connect() as db:
+                db.execute("UPDATE papers SET related_json = ? WHERE id = ?", (dumps(online), request.paper_id))
+
+    library_titles = {str(p["title"]).lower() for p in list_papers()}
+    for item in online.get("external", []):
+        item["in_library"] = item["title"].lower() in library_titles
+        if item.get("relation") and item["relation"] not in RELATIONS:
+            item["relation"] = None
+
+    paper.pop("related_json", None)
+    paper.pop("summary", None)
+    return {"paper": paper, "library": library, "related": library, **online}

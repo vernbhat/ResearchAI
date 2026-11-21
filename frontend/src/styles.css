@@ -450,3 +450,69 @@ article p {
 .error {
   cursor: pointer;
 }
+
+.related-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.related-head button.ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.related-paper a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.related-paper .reason {
+  color: #1f4f46;
+  font-weight: 500;
+}
+
+.related-paper .tag {
+  font-style: normal;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #e3f0ec;
+  color: #1f4f46;
+  padding: 1px 6px;
+  border-radius: 4px;
+  margin-right: 4px;
+}
+
+.related-paper .pdf-link {
+  font-size: 13px;
+  color: #2f6f62;
+}
+
+.notice {
+  background: #fff6e0;
+  border: 1px solid #f0d78c;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.subhead {
+  margin: 16px 0 6px;
+  font-size: 14px;
+}
+
+.related-paper p.abstract {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: #555;
+  font-size: 13px;
+}
