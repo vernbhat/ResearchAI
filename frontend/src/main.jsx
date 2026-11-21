@@ -479,12 +479,9 @@ function App() {
                 <h4 className="subhead">In your library</h4>
                 {related.library.length ? (
                   related.library.map((item) => (
-                    <article key={item.chunk_id}>
+                    <article key={item.chunk_id} className="library-match">
                       <strong>{item.paper_title}</strong>
-                      <span>
-                        Similarity {item.score} · closest passage on page {item.page_number}
-                      </span>
-                      <p>{item.excerpt}</p>
+                      <span>Similarity score {item.score.toFixed(2)} (embedding cosine)</span>
                     </article>
                   ))
                 ) : (
