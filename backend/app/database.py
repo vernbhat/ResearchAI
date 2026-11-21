@@ -53,6 +53,20 @@ def ensure_storage() -> None:
             );
             """
         )
+        _migrate(db)
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    """Add columns introduced after the first version without losing data."""
+    columns = {
+        "chunks": {"embedding_json": "TEXT"},
+        "papers": {"summary": "TEXT"},
+    }
+    for table, wanted in columns.items():
+        existing = {row["name"] for row in db.execute(f"PRAGMA table_info({table})")}
+        for name, kind in wanted.items():
+            if name not in existing:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
 
 def connect() -> sqlite3.Connection:

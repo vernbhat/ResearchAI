@@ -45,17 +45,15 @@ FastAPI backend
 - App data is stored in `backend/data/researchhub.db`
 - SQLite tables store papers, chunks, chats, and messages
 
-### Retrieval Method
+### Retrieval Method (v0.2)
 
-This MVP does not use OpenAI, FAISS, or sentence-transformers yet. Instead, it uses a simple local retrieval system:
-
-- Text is tokenized into words
-- Each chunk becomes a word-frequency vector
-- The user question also becomes a vector
-- Cosine similarity finds the most relevant chunks
-- The answer is generated from those chunks with page citations
-
-This makes the project run locally without API keys.
+- PDF text is split into 160-word chunks (40-word overlap); reference lists are skipped
+- Each chunk is embedded locally with fastembed (`BAAI/bge-small-en-v1.5`, 384-dim) and stored in SQLite
+- A question is embedded and compared with every chunk using cosine similarity
+- BM25 keyword scores (stemmed, stopwords removed) are combined with the embedding score (55% / 45%)
+- If an LLM is configured, it first rewrites the question into extra search queries (multi-query retrieval)
+- The top chunks go to the LLM (Groq `openai/gpt-oss-120b` or local Ollama), which writes an answer citing [1], [2]...
+- Without an LLM key, the app falls back to showing the extracted passages
 
 ## File Structure
 
@@ -899,34 +897,22 @@ Frontend displays related chunks or an empty-state message
 
 ## Current Limitations
 
-This project is intentionally simple and local-first.
-
-Current limitations:
-
-- It does not use a real LLM yet.
-- It does not use semantic embeddings yet.
-- It does not use FAISS yet.
-- Answers are extractive and based on retrieved chunks.
+- Scanned PDFs (images only) are not supported (no OCR).
 - Related work only searches among uploaded PDFs, not the internet.
-- Duplicate uploads can still appear in the paper list, although related-work search filters them out.
-- The chat list shows saved chats, but loading old chat messages into the UI can be improved.
+- Answer quality depends on the LLM; without a key, answers are extractive.
 
 ## Possible Future Improvements
 
-Good next steps:
-
-1. Add sentence-transformers embeddings.
-2. Add FAISS vector database.
-3. Add OpenAI, Ollama, or another LLM for better answer generation.
-4. Add user accounts.
-5. Add delete paper functionality.
-6. Add duplicate upload prevention.
-7. Add section detection for Abstract, Methodology, Results, and Conclusion.
-8. Add PDF page preview.
-9. Add export summary to Markdown or PDF.
-10. Add better chat history viewing.
+1. Use a vector index such as FAISS or sqlite-vec for large libraries.
+2. Add a cross-encoder reranker.
+3. Detect sections (Abstract, Method, Results) for better summaries.
+4. Add PDF page preview when clicking a citation.
+5. Export summaries to Markdown/PDF.
+6. Add user accounts.
 
 ## How To Run The Project
+
+First copy `backend/.env.example` to `backend/.env` and add a free Groq API key from https://console.groq.com/keys.
 
 ### Backend
 
