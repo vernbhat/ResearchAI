@@ -41,30 +41,45 @@ def extract_pdf_pages(path: Path) -> list[dict[str, object]]:
     return list(extract_pdf(path)["pages"])  # type: ignore[arg-type]
 
 
+BOILERPLATE = re.compile(
+    r"contents lists available|sciencedirect|journal homepage|www\.|https?://|elsevier|springer|"
+    r"ieee|transactions on|proceedings of|journal of|vol\.|volume|issn|doi:|©|copyright|"
+    r"received|accepted|available online|preprint|^arxiv",
+    re.IGNORECASE,
+)
+
+
+def looks_like_title(text: str) -> bool:
+    """A real title has several words and is not a journal header or boilerplate line."""
+    words = re.findall(r"[A-Za-z][A-Za-z\-']*", text)
+    return 3 <= len(words) <= 40 and 8 <= len(text) <= 250 and not BOILERPLATE.search(text)
+
+
 def _extract_title(doc: fitz.Document) -> str | None:
-    meta_title = (doc.metadata or {}).get("title", "").strip()
-    if 8 <= len(meta_title) <= 250 and not re.search(r"\.(pdf|docx?|tex)$|^untitled|^microsoft word|^arxiv", meta_title, re.I):
-        return clean_text(meta_title)
+    meta_title = clean_text((doc.metadata or {}).get("title", "") or "")
+    if looks_like_title(meta_title) and not re.search(r"\.(pdf|docx?|tex)$|^untitled|^microsoft word", meta_title, re.I):
+        return meta_title
     if doc.page_count == 0:
         return None
-    # Fallback: the largest-font text near the top of page 1.
-    spans = []
+    # Fallback: the largest-font lines near the top of page 1, skipping journal headers
+    # (e.g. Elsevier puts "Neurocomputing" above the real title).
+    lines = []
     for block in doc[0].get_text("dict").get("blocks", []):
         for line in block.get("lines", []):
             if abs(line.get("dir", (1, 0))[1]) > 0.1:  # skip rotated text such as the arXiv side stamp
                 continue
-            for span in line.get("spans", []):
-                text = span.get("text", "").strip()
-                if re.match(r"^arxiv:", text, re.I):
-                    continue
-                if len(text) > 2 and span["bbox"][1] < doc[0].rect.height * 0.5:
-                    spans.append((round(span["size"], 1), span["bbox"][1], text))
-    if not spans:
-        return None
-    biggest = max(size for size, _, _ in spans)
-    parts = [text for size, _, text in sorted(spans, key=lambda s: s[1]) if size == biggest]
-    title = clean_text(" ".join(parts))
-    return title if 8 <= len(title) <= 250 else None
+            spans = [s for s in line.get("spans", []) if s.get("text", "").strip()]
+            if not spans or spans[0]["bbox"][1] > doc[0].rect.height * 0.5:
+                continue
+            text = clean_text(" ".join(s["text"] for s in spans))
+            if len(text) > 2 and not re.match(r"^arxiv:", text, re.I):
+                lines.append((round(max(s["size"] for s in spans), 1), spans[0]["bbox"][1], text))
+    for size in sorted({size for size, _, _ in lines}, reverse=True):
+        parts = [text for s, _, text in sorted(lines, key=lambda l: l[1]) if s == size and not BOILERPLATE.search(text)]
+        title = clean_text(" ".join(parts))
+        if looks_like_title(title):
+            return title
+    return None
 
 
 def chunk_pages(pages: list[dict[str, object]]) -> list[dict[str, object]]:

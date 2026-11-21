@@ -12,7 +12,7 @@ from app.database import UPLOAD_DIR, connect, dumps, ensure_storage, loads, row_
 from app.models import AskRequest, AskResponse, Citation, CompareRequest, RelatedRequest
 from app.services import embeddings
 from app.services.llm import llm_status
-from app.services.pdf import chunk_pages, extract_pdf
+from app.services.pdf import chunk_pages, extract_pdf, looks_like_title
 from app.services.qa import (
     answer_question,
     compare_papers,
@@ -29,9 +29,29 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(messag
 log = logging.getLogger("researchai")
 
 
+def repair_titles() -> None:
+    """Re-read titles that look wrong (e.g. a journal name like "Neurocomputing")."""
+    with connect() as db:
+        rows = db.execute("SELECT id, title, path FROM papers").fetchall()
+        for row in rows:
+            if looks_like_title(str(row["title"])) or not Path(str(row["path"])).exists():
+                continue
+            try:
+                title = extract_pdf(Path(str(row["path"])))["title"]
+            except Exception:  # noqa: BLE001 - a broken file should not stop startup
+                continue
+            if title and title != row["title"]:
+                log.info("Fixed title for paper %s: %r -> %r", row["id"], row["title"], title)
+                db.execute(
+                    "UPDATE papers SET title = ?, summary = NULL, related_json = NULL WHERE id = ?",
+                    (title, row["id"]),
+                )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     ensure_storage()
+    repair_titles()
     backfill_embeddings()
     status = llm_status()
     log.info("LLM: %s (%s) enabled=%s", status["provider"], status["model"], status["enabled"])
